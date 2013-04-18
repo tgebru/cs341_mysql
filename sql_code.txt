@@ -1,0 +1,99 @@
+
+#insert into pge_analysis.customer_service_change
+#People with multiple service plans meaning they enrolled in a different program etc...
+#select * from 01customer group by ACCOUNT_ID having count(*)> 1 order by ACCOUNT_ID;
+
+#Tables showing start and end dates of people's enrollments in various programs
+
+#table with people signed up in BPP program
+create table if not exists pge_analysis.bpp_enrollment select ACCOUNT_ID, BPP_start, BPP_end from 05programs where BPP_start is not NULL;
+
+#table with people signed up in CARE program
+create table if not exists pge_analysis.care_enrollment select ACCOUNT_ID, CARE_start, CARE_end from 05programs where CARE_start is not NULL;
+
+#table with people signed up in ClimateSmart program
+create table if not exists pge_analysis.climateSmart_enrollment select ACCOUNT_ID, ClimateSmart_start , ClimateSmart_end from 05programs where ClimateSmart_start is not NULL;
+
+#table with people signed up in DirAccess program
+create table if not exists pge_analysis.dirAccess_enrollment select ACCOUNT_ID, DirAccess_start, DirAccess_end from 05programs where DirAccess_start is not NULL;
+
+#table with people signed up in SmartAC program
+create table if not exists pge_analysis.smartAC_enrollment select ACCOUNT_ID, SmartAC_start, SmartAC_end from 05programs where SmartAC_start is not NULL;
+#table with people signed up in SmartRate program create table if not exists pge_analysis.smartRate_enrollment select ACCOUNT_ID, SmartRate_start, SmartRate_end from 05programs where SmartRate_start is not NULL;
+
+#table with the last time people logged into MyEnergy portal
+create table if not exists pge_analysis.myEnergy_enrollment select ACCOUNT_ID, MyEnergy_LastLogin from 05programs where MyEnergy_LastLogin  is not NULL;
+
+#Create a table with electric & gas daily readings for X number of days before BPP program enrollment and X number of days after BPP program enrollment where X is now 30. The table consists of ACCOUNT_ID, Readings 1 to 2X , Dates 1…2X 
+create table if not exists pge_analysis.bpp_before_after 
+select electric_daily.sp_id, 01customer.ACCOUNT_ID, 01customer.PREMISE_ID, 05programs.BPP_start, kwh , date from electric_daily,01customer,05programs 
+where electric_daily.sp_id=01customer.SP_ID and 01customer.ACCOUNT_ID=05programs.ACCOUNT_ID and electric_daily.date >= DATE_SUB(05programs.BPP_start,INTERVAL 30 DAY) and electric_daily.date <= DATE_ADD(05programs.BPP_start, INTERVAL 30 DAY) and electric_daily.date <= 05programs.BPP_end;
+
+#Create a table with ACCOUNT_ID, SP_ID, Type (G or E) and number of days of data
+create table if not exists pge_analysis.days_of_data_gas
+select ACCOUNT_ID, gas_daily.SP_ID as SP_ID, count(distinct(date)) as Number_of_days from 01customer,gas_daily where 
+01customer.SP_ID=gas_daily.sp_id group by SP_ID;
+
+#Create a table with ACCOUNT_ID, SP_ID, Type (G or E) and number of days of data
+create table if not exists pge_analysis.days_of_data_electricity
+select ACCOUNT_ID, electric_daily.SP_ID as SP_ID, count(distinct(date)) as Number_of_days from 01customer,electric_daily where
+01customer.SP_ID=electric_daily.sp_id group by SP_ID;
+
+#Number of SP_IDs with more than one account ID
+select SP_ID, C from (select SP_ID as SP_ID, count(distinct(ACCOUNT_ID)) as C from 01customer group by SP_ID) AS T where C >1;
+
+#Number of premises with more than one account ID
+select P_ID, SP_ID,SERVICE_ID, C from (select SP_ID as SP_ID, PREMISE_ID as P_ID, SERVICE_AGREEMENT_ID as SERVICE_ID, count(distinct(ACCOUNT_ID)) as C from 01customer group by P_ID) AS T where C >1;
+
+#All the Customers (Account IDs) that are registered at Premise IDs that have more than one customer
+select distinct(ACCOUNT_ID) FROM 01customer,  
+(select P_ID, SP_ID,SERVICE_ID, C from (select SP_ID as SP_ID, PREMISE_ID as P_ID, SERVICE_AGREEMENT_ID as SERVICE_ID, count(distinct(ACCOUNT_ID)) as C from 01customer group by P_ID) AS T where C >1) as S
+where 01customer.PREMISE_ID=S.P_ID ORDER BY ACCOUNT_ID;
+
+#Max number of account ids associated with a premise
+select max(c) from (select SP_ID, C from (select SP_ID as SP_ID, count(distinct(ACCOUNT_ID)) as C from 01customer group by SP_ID) AS T where C >1) as T2;
+
+#Account IDs of people associated with sp_id having at least 2 years of gas data
+select ACCOUNT_ID as ACCOUNT_ID, 01customer.SP_ID as sp_id FROM 01customer, 
+ (select sp_id as sp_id, count(distinct(date)) as C from gas_daily group by sp_id) as T where C>730 and 01customer.SP_ID=T.sp_id; 
+
+
+#Account IDs of people with at least 2 years of electric data 
+select ACCOUNT_ID as ACCOUNT_ID, 01customer.SP_ID as sp_id FROM 01customer,       
+   (select sp_id as sp_id, count(distinct(date)) as C from electric_daily group by sp_id) as T where C>730 and 01customer.SP_ID=T.sp_id; 
+
+#Create a table with a mapping of the User IDs and and various experimental criteria
+# col1=Not_Moved--Users who have not moved
+# col2=2_Years of Data--users who have two years of data
+# col3=BPP_before_after 
+create table if not exists pge_analysis.user_selection_flag select distinct(ACCOUNT_ID) from 01customer;
+
+#ADD column of people where the value is 1 if they have not moved around
+ALTER TABLE pge_analysis.user_selection_flag ADD Not_moved int;
+
+#Get all the people who have not moved and add a flag of 1 for them
+UPDATE pge_analysis.user_selection_flag SET Not_moved=0; 
+UPDATE pge_analysis.user_selection_flag SET Not_moved=1 
+where ACCOUNT_ID NOT in
+(select distinct(ACCOUNT_ID) FROM 01customer,  
+(select P_ID, SP_ID,SERVICE_ID, C from (select SP_ID as SP_ID, PREMISE_ID as P_ID, SERVICE_AGREEMENT_ID as SERVICE_ID, count(distinct(ACCOUNT_ID)) as C from 01customer group by P_ID) AS T where C >1) as S
+where 01customer.PREMISE_ID=S.P_ID);
+
+#ADD a column of people where the value is 1 if people have at least 2 years of gas data
+ALTER TABLE pge_analysis.user_selection_flag ADD Gas_2years int;
+#Get all the people who have 2 years of gas data  
+UPDATE pge_analysis.user_selection_flag SET Gas_2years=0; 
+UPDATE pge_analysis.user_selection_flag SET Gas_2years=1 
+WHERE ACCOUNT_ID IN 
+(select ACCOUNT_ID FROM (select ACCOUNT_ID as ACCOUNT_ID, 01customer.SP_ID as sp_id FROM 01customer, (select sp_id as sp_id, count(distinct(date)) as C from gas_daily group by sp_id) as T where C>730 and 01customer.SP_ID=T.sp_id) as S);   
+
+#ADD a column of people where the value is 1 if people have at least 2 years of electric  data
+ALTER TABLE pge_analysis.user_selection_flag ADD electric_2years int;
+#Get all the people who have at least 2 years of electric data and add a flag of 1 for them
+UPDATE pge_analysis.user_selection_flag SET electric_2years=1 
+WHERE ACCOUNT_ID IN 
+(select ACCOUNT_ID FROM (select ACCOUNT_ID as ACCOUNT_ID, 01customer.SP_ID as sp_id FROM 01customer, (select sp_id as sp_id, count(distinct(date)) as C from electric_daily group by sp_id) as T where C>730 and 01customer.SP_ID=T.sp_id) as S);  
+
+#ADD a column of people where the value is 1 if people are in BPP_Before_After table
+
+
